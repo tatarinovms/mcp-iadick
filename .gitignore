@@ -1,0 +1,12 @@
+# Binaries
+/bin/
+/mcp-iadick
+*.exe
+*.test
+
+# IDE & OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

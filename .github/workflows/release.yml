@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            artifact_name: mcp-iadick-linux-amd64
+          - goos: linux
+            goarch: arm64
+            artifact_name: mcp-iadick-linux-arm64
+          - goos: linux
+            goarch: arm
+            goarm: 7
+            artifact_name: mcp-iadick-linux-armv7
+          - goos: darwin
+            goarch: amd64
+            artifact_name: mcp-iadick-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            artifact_name: mcp-iadick-darwin-arm64
+          - goos: windows
+            goarch: amd64
+            artifact_name: mcp-iadick-windows-amd64
+          - goos: windows
+            goarch: arm64
+            artifact_name: mcp-iadick-windows-arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: 0
+        run: |
+          VERSION="${{ github.ref_name }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="dev"
+          fi
+          COMMIT="${{ github.sha }}"
+          BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${BUILD_DATE}"
+
+          BINARY_NAME="mcp-iadick"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME="mcp-iadick.exe"
+          fi
+          go build -trimpath -ldflags="${LDFLAGS}" -o "dist/${BINARY_NAME}" ./cmd/mcp-iadick
+
+      - name: Package archive
+        run: |
+          mkdir -p release
+          cd dist
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip "../release/${{ matrix.artifact_name }}.zip" mcp-iadick.exe
+          else
+            tar -czvf "../release/${{ matrix.artifact_name }}.tar.gz" mcp-iadick
+          fi
+          cd ..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: release/*
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd release-artifacts
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-artifacts/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
