@@ -6,14 +6,14 @@
 
 **mcp-iadick** — быстрый легковесный сервер протокола [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) на **Go**, предназначенный для работы с **Яндекс Диском** через утилиту [rclone](https://rclone.org/).
 
-Сервер собирается в единый бинарный файл, не требует установки внешних интерпретаторов (Python, Node.js) и может работать как **локально (stdio)**, так и **по сети (SSE / Streamable HTTP)** для удаленных клиентов или работы в Docker/Kubernetes/DietPi.
+Сервер собирается в единый бинарный файл, не требует установки внешних интерпретаторов (Python, Node.js) и может работать как **локально (stdio)**, так и **по сети (Streamable HTTP / SSE)** для удаленных клиентов или работы в Docker/Kubernetes/сервере.
 
 ---
 
 ## Возможности
 
 - **Написан на Go**: быстрый старт, низкое потребление памяти (< 15 МБ RAM), единый бинарник.
-- **Сетевой режим**: поддержка **SSE (`/sse`)** и **Streamable HTTP (`/mcp`)** для удаленного подключения моделей и клиентов.
+- **Сетевой режим**: поддержка **Streamable HTTP (`/mcp`)**, **SSE (`/sse`)** и универсального режима **Dual (`/mcp` + `/sse`)** на одном порту.
 - **Навигация**: просмотр содержимого директорий (`yandex_list_directory`), метаданных файлов (`yandex_get_file_info`).
 - **Поиск**: поиск файлов по маске/шаблону (`yandex_search_files`).
 - **Чтение и запись**: чтение текстовых файлов с лимитом размера (`yandex_read_file`), запись/создание файлов (`yandex_write_file`).
@@ -53,7 +53,7 @@
 ### Вариант 1. Скачивание готового бинарника из Releases
 
 Готовые скомпилированные бинарники для всех популярных платформ доступны на странице [GitHub Releases](https://github.com/tatarinovms/mcp-iadick/releases):
-- **Linux**: `amd64`, `arm64` (Raspberry Pi 3/4/5 / DietPi 64-bit), `armv7` (Raspberry Pi 32-bit)
+- **Linux**: `amd64`, `arm64`, `armv7`
 - **macOS**: `arm64` (Apple Silicon M1/M2/M3/M4), `amd64` (Intel)
 - **Windows**: `amd64`, `arm64`
 
@@ -64,7 +64,7 @@
 go build -o bin/mcp-iadick ./cmd/mcp-iadick
 ```
 
-Кросс-компиляция (например, для Linux ARM64 / Raspberry Pi):
+Кросс-компиляция (например, для Linux ARM64):
 ```bash
 GOOS=linux GOARCH=arm64 go build -o bin/mcp-iadick-linux-arm64 ./cmd/mcp-iadick
 ```
@@ -87,143 +87,32 @@ GOOS=linux GOARCH=arm64 go build -o bin/mcp-iadick-linux-arm64 ./cmd/mcp-iadick
 ## Режимы работы
 
 ### 1. Локальный режим (stdio)
-Используется по умолчанию для локальных MCP клиентов:
+Используется по умолчанию для локальных MCP клиентов (Claude Desktop, Cursor и др.):
 ```bash
 ./bin/mcp-iadick -transport stdio
 ```
 
-### 2. Сетевой режим SSE (Server-Sent Events)
-Позволяет подключить MCP сервер по сети (например, с другого компьютера, виртуальной машины или микрокомпьютера):
-```bash
-# Слушать на всех интерфейсах (порт 8080)
-./bin/mcp-iadick -transport sse -addr :8080
-
-# С указанием базового URL (если сервер за прокси или в локальной сети):
-./bin/mcp-iadick -transport sse -addr :8080 -base-url http://192.168.1.100:8080
-```
-Endpoint для подключения: `http://<host>:8080/sse`
-
-### 3. Режим Streamable HTTP
+### 2. Режим Streamable HTTP (рекомендуется для OpenCode v2)
+Современный протокол спецификации MCP. OpenCode v2 для удаленных серверов отправляет запросы `POST /mcp`:
 ```bash
 ./bin/mcp-iadick -transport http -addr :8080
 ```
 Endpoint для подключения: `http://<host>:8080/mcp`
 
----
-
-## Развертывание SSE сервера на DietPi (Raspberry Pi / SBC)
-
-DietPi — легковесный дистрибутив на базе Debian, идеально подходящий для круглосуточной работы автономного MCP сервера в локальной сети.
-
-### Шаг 1. Кросс-компиляция бинарника под архитектуру платы
-
-На компьютере разработчика соберите бинарник под процессор вашего одноплатника:
-
-- Для **Raspberry Pi 3 / 4 / 5, Zero 2 W** (64-bit DietPi, `aarch64`):
-  ```bash
-  GOOS=linux GOARCH=arm64 go build -o bin/mcp-iadick-arm64 ./cmd/mcp-iadick
-  ```
-
-- Для **Raspberry Pi 1 / 2 / Zero** (32-bit DietPi, `armhf`):
-  ```bash
-  GOOS=linux GOARCH=arm GOARM=7 go build -o bin/mcp-iadick-armv7 ./cmd/mcp-iadick
-  ```
-
-- Для **x86_64 mini PC**:
-  ```bash
-  GOOS=linux GOARCH=amd64 go build -o bin/mcp-iadick-amd64 ./cmd/mcp-iadick
-  ```
-
-*(Либо просто скачайте готовый архив из [Releases](https://github.com/tatarinovms/mcp-iadick/releases)).*
-
-### Шаг 2. Перенос файла на DietPi
-
-Скопируйте бинарник на плату через `scp`:
+### 3. Режим SSE (Server-Sent Events)
+Legacy-протокол (`GET /sse` + `POST /message?sessionId=...`), используемый некоторыми клиентами (Claude Desktop):
 ```bash
-scp bin/mcp-iadick-arm64 dietpi@<DIETPI_IP>:/home/dietpi/mcp-iadick
+./bin/mcp-iadick -transport sse -addr :8080 -base-url http://<host>:8080
 ```
+Endpoint для подключения: `http://<host>:8080/sse`
 
-### Шаг 3. Установка и настройка rclone на DietPi
-
-Подключитесь по SSH к DietPi:
+### 4. Универсальный сетевой режим Dual (Streamable HTTP + SSE)
+Одновременно поднимает **и `/mcp`** (для OpenCode v2), **и `/sse`** (для Claude Desktop/legacy) на одном порту:
 ```bash
-ssh dietpi@<DIETPI_IP>
+./bin/mcp-iadick -transport dual -addr :8080
 ```
-
-Установите rclone (если еще не установлен):
-```bash
-sudo apt update && sudo apt install -y rclone
-```
-
-Сделайте бинарник исполняемым:
-```bash
-chmod +x /home/dietpi/mcp-iadick
-```
-
-Настройте доступ к Яндекс Диску:
-```bash
-rclone config
-# Задайте имя пульта: yandex
-```
-Проверьте доступ:
-```bash
-rclone lsd yandex:
-```
-
-### Шаг 4. Настройка автозапуска через systemd
-
-Создайте файл службы `/etc/systemd/system/mcp-iadick.service`:
-```bash
-sudo nano /etc/systemd/system/mcp-iadick.service
-```
-
-Вставьте конфигурацию:
-```ini
-[Unit]
-Description=MCP Yandex Disk Server (SSE)
-After=network.target
-
-[Service]
-Type=simple
-User=dietpi
-Group=dietpi
-WorkingDirectory=/home/dietpi
-ExecStart=/home/dietpi/mcp-iadick -transport sse -addr :8080 -base-url http://dietpi.local:8080
-Restart=always
-RestartSec=5
-Environment=RCLONE_REMOTE=yandex
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-
-[Install]
-WantedBy=multi-user.target
-```
-> Примечание: если в локальной сети не работает mDNS (`dietpi.local`), укажите реальный IP-адрес платы в параметре `-base-url`, например: `-base-url http://192.168.1.150:8080`.
-
-Примените изменения и запустите сервис:
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now mcp-iadick
-```
-
-Проверьте статус работы:
-```bash
-sudo systemctl status mcp-iadick
-```
-
-Просмотр логов сервера в реальном времени:
-```bash
-journalctl -u mcp-iadick -f
-```
-
-### Шаг 5. Настройка фаервола (если включен)
-
-Если на DietPi включен `ufw` или `dietpi-firewall`, откройте порт 8080:
-```bash
-sudo ufw allow 8080/tcp
-```
-
-Сервер готов к приему запросов по адресу:
-`http://<DIETPI_IP>:8080/sse`
+- OpenCode v2 подключается к `http://<host>:8080/mcp`
+- Claude Desktop подключается к `http://<host>:8080/sse`
 
 ---
 
@@ -231,7 +120,8 @@ sudo ufw allow 8080/tcp
 
 ### 1. OpenCode v2 (`opencode.json` / `opencode.jsonc`)
 
-#### Сетевой режим (SSE к DietPi):
+#### Сетевое подключение к серверу:
+В `~/.config/opencode/opencode.jsonc` (или локальном `opencode.json`):
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
@@ -239,11 +129,23 @@ sudo ufw allow 8080/tcp
     "servers": {
       "yandex-disk": {
         "type": "remote",
-        "url": "http://<DIETPI_IP>:8080/sse"
+        "url": "http://<SERVER_IP>:8080/mcp"
       }
     }
   }
 }
+```
+
+> Важно: в URL обязательно должен быть суффикс `/mcp` (Streamable HTTP). Если OpenCode ранее кешировал статус ошибки, перезапустите фоновый сервис OpenCode или сессию.
+
+Через CLI OpenCode:
+```bash
+opencode mcp add yandex-disk --url http://<SERVER_IP>:8080/mcp
+```
+
+Проверка статуса подключения:
+```bash
+opencode mcp list
 ```
 
 #### Локальный запуск бинарника (stdio):
@@ -254,7 +156,7 @@ sudo ufw allow 8080/tcp
     "servers": {
       "yandex-disk": {
         "type": "local",
-        "command": ["/Volumes/HDD/project/mcp-iadick/bin/mcp-iadick"],
+        "command": ["/path/to/bin/mcp-iadick"],
         "environment": {
           "RCLONE_REMOTE": "yandex"
         }
@@ -264,26 +166,17 @@ sudo ufw allow 8080/tcp
 }
 ```
 
-Через CLI OpenCode:
-```bash
-# Для удаленного SSE сервера на DietPi:
-opencode mcp add yandex-disk --url http://<DIETPI_IP>:8080/sse
-
-# Для локального запуска:
-opencode mcp add yandex-disk -- /Volumes/HDD/project/mcp-iadick/bin/mcp-iadick
-```
-
 ---
 
 ### 2. Claude Desktop (`claude_desktop_config.json`)
 
-#### Сетевое подключение (SSE к DietPi):
+#### Сетевое подключение (SSE):
 ```json
 {
   "mcpServers": {
     "yandex-disk": {
       "type": "sse",
-      "url": "http://<DIETPI_IP>:8080/sse"
+      "url": "http://<SERVER_IP>:8080/sse"
     }
   }
 }
@@ -294,7 +187,7 @@ opencode mcp add yandex-disk -- /Volumes/HDD/project/mcp-iadick/bin/mcp-iadick
 {
   "mcpServers": {
     "yandex-disk": {
-      "command": "/Volumes/HDD/project/mcp-iadick/bin/mcp-iadick",
+      "command": "/path/to/bin/mcp-iadick",
       "args": ["-transport", "stdio"],
       "env": {
         "RCLONE_REMOTE": "yandex"
@@ -308,14 +201,14 @@ opencode mcp add yandex-disk -- /Volumes/HDD/project/mcp-iadick/bin/mcp-iadick
 
 ### 3. Cursor / Antigravity / Cline
 
-В сетевом режиме по URL: `http://<DIETPI_IP>:8080/sse`.
+В сетевом режиме: `http://<SERVER_IP>:8080/mcp` или `http://<SERVER_IP>:8080/sse`.
 
 Для локального запуска:
 ```json
 {
   "mcpServers": {
     "yandex-disk": {
-      "command": "/Volumes/HDD/project/mcp-iadick/bin/mcp-iadick"
+      "command": "/path/to/bin/mcp-iadick"
     }
   }
 }
@@ -327,8 +220,8 @@ opencode mcp add yandex-disk -- /Volumes/HDD/project/mcp-iadick/bin/mcp-iadick
 
 | Флаг CLI | Описание | По умолчанию |
 |---|---|---|
-| `-transport` | Протокол транспорта: `stdio`, `sse`, `http` | `stdio` |
-| `-addr` | Сетевой адрес для `sse` и `http` (например, `:8080`, `0.0.0.0:8080`) | `:8080` |
+| `-transport` | Протокол транспорта: `stdio`, `http` (Streamable HTTP), `sse`, `dual` (HTTP + SSE) | `stdio` |
+| `-addr` | Сетевой адрес для сетевых режимов (например, `:8080`, `0.0.0.0:8080`) | `:8080` |
 | `-base-url` | Базовый URL для SSE сервера | `http://localhost:<port>` |
 | `-remote` | Имя пульта rclone (или переменная `RCLONE_REMOTE`) | `yandex` |
 | `-rclone-path` | Путь к бинарнику rclone (или переменная `RCLONE_PATH`) | автопоиск |
