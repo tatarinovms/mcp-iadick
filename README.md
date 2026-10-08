@@ -76,10 +76,10 @@ GOOS=linux GOARCH=arm64 go build -o bin/mcp-iadick-linux-arm64 ./cmd/mcp-iadick
 ## Автоматическая сборка релизов (CI/CD)
 
 В репозитории настроен GitHub Actions workflow (`.github/workflows/release.yml`):
-- Запускается автоматически при создании и отправке любого тега вида `v*` (например, `v0.1.0`):
+- Запускается автоматически при создании и отправке любого тега вида `v*` (например, `v0.2.0`):
   ```bash
-  git tag v0.1.0
-  git push origin v0.1.0
+  git tag v0.2.0
+  git push origin v0.2.0
   ```
 - Автоматически компилирует статические бинарники под 7 целевых архитектур (Linux amd64/arm64/armv7, macOS amd64/arm64, Windows amd64/arm64).
 - Упаковывает архивы (`.tar.gz` / `.zip`), вычисляет контрольные суммы SHA256 (`checksums.txt`) и публикует релиз на GitHub.
@@ -89,32 +89,32 @@ GOOS=linux GOARCH=arm64 go build -o bin/mcp-iadick-linux-arm64 ./cmd/mcp-iadick
 ## Режимы работы
 
 ### 1. Локальный режим (stdio)
-Используется по умолчанию для локальных MCP клиентов (Claude Desktop, Cursor и др.):
+Используется по умолчанию для локальных MCP клиентов (OpenCode v2, Claude Code, Hermes и др.):
 ```bash
 ./bin/mcp-iadick -transport stdio
 ```
 
-### 2. Режим Streamable HTTP (рекомендуется для OpenCode v2)
-Современный протокол спецификации MCP. OpenCode v2 для удаленных серверов отправляет запросы `POST /mcp`:
+### 2. Режим Streamable HTTP (рекомендуется для OpenCode v2 и Hermes)
+Современный протокол спецификации MCP. OpenCode v2 и Hermes для удаленных серверов отправляют запросы `POST /mcp`:
 ```bash
 ./bin/mcp-iadick -transport http -addr :8080
 ```
 Endpoint для подключения: `http://<host>:8080/mcp`
 
 ### 3. Режим SSE (Server-Sent Events)
-Legacy-протокол (`GET /sse` + `POST /message?sessionId=...`), используемый некоторыми клиентами (Claude Desktop):
+Сетевой протокол SSE (`GET /sse` + `POST /message?sessionId=...`), поддерживаемый сетевыми клиентами (включая Claude Code):
 ```bash
 ./bin/mcp-iadick -transport sse -addr :8080 -base-url http://<host>:8080
 ```
 Endpoint для подключения: `http://<host>:8080/sse`
 
 ### 4. Универсальный сетевой режим Dual (Streamable HTTP + SSE)
-Одновременно поднимает **и `/mcp`** (для OpenCode v2), **и `/sse`** (для Claude Desktop/legacy) на одном порту:
+Одновременно поднимает **и `/mcp`** (Streamable HTTP для OpenCode v2 / Hermes), **и `/sse`** (для Claude Code / SSE клиентов) на одном порту:
 ```bash
 ./bin/mcp-iadick -transport dual -addr :8080
 ```
-- OpenCode v2 подключается к `http://<host>:8080/mcp`
-- Claude Desktop подключается к `http://<host>:8080/sse`
+- OpenCode v2 / Hermes подключаются к `http://<host>:8080/mcp`
+- Claude Code и SSE-клиенты подключаются к `http://<host>:8080/sse`
 
 ---
 
@@ -138,7 +138,7 @@ Endpoint для подключения: `http://<host>:8080/sse`
 }
 ```
 
-> Важно: в URL обязательно должен быть суффикс `/mcp` (Streamable HTTP). Если OpenCode ранее кешировал статус ошибки, перезапустите фоновый сервис OpenCode или сессию.
+> Важно: в URL обязательно должен быть суффикс `/mcp` (Streamable HTTP).
 
 Через CLI OpenCode:
 ```bash
@@ -170,27 +170,26 @@ opencode mcp list
 
 ---
 
-### 2. Claude Desktop (`claude_desktop_config.json`)
+### 2. Claude Code
 
 #### Сетевое подключение (SSE):
-```json
-{
-  "mcpServers": {
-    "yandex-disk": {
-      "type": "sse",
-      "url": "http://<SERVER_IP>:8080/sse"
-    }
-  }
-}
+Через CLI Claude Code:
+```bash
+claude mcp add --transport sse yandex-disk http://<SERVER_IP>:8080/sse
 ```
 
 #### Локальный запуск (stdio):
+Через CLI Claude Code:
+```bash
+claude mcp add yandex-disk -- /path/to/bin/mcp-iadick
+```
+
+Или через конфигурационный файл `~/.claude.json` / `.claude.json`:
 ```json
 {
   "mcpServers": {
     "yandex-disk": {
       "command": "/path/to/bin/mcp-iadick",
-      "args": ["-transport", "stdio"],
       "env": {
         "RCLONE_REMOTE": "yandex"
       }
@@ -201,19 +200,38 @@ opencode mcp list
 
 ---
 
-### 3. Cursor / Antigravity / Cline
+### 3. Hermes Agent (`~/.hermes/config.yaml`)
 
-В сетевом режиме: `http://<SERVER_IP>:8080/mcp` или `http://<SERVER_IP>:8080/sse`.
+#### Сетевое подключение к серверу:
+В `~/.hermes/config.yaml`:
+```yaml
+mcp_servers:
+  yandex-disk:
+    url: "http://<SERVER_IP>:8080/mcp"
+```
 
-Для локального запуска:
-```json
-{
-  "mcpServers": {
-    "yandex-disk": {
-      "command": "/path/to/bin/mcp-iadick"
-    }
-  }
-}
+Через CLI Hermes:
+```bash
+hermes mcp add yandex-disk --url http://<SERVER_IP>:8080/mcp
+```
+
+#### Локальный запуск бинарника (stdio):
+```yaml
+mcp_servers:
+  yandex-disk:
+    command: "/path/to/bin/mcp-iadick"
+    env:
+      RCLONE_REMOTE: "yandex"
+```
+
+Через CLI Hermes:
+```bash
+hermes mcp add yandex-disk --command "/path/to/bin/mcp-iadick"
+```
+
+Проверка подключения в сессии Hermes:
+```
+/reload-mcp
 ```
 
 ---
@@ -258,7 +276,7 @@ opencode mcp list
 
 ## Готовые скиллы (Agent Skills)
 
-В репозитории подготовлены навыки по спецификации **Agent Skills** (размещены в каталогах `.agents/skills/` и `.opencode/skills/`), которые автоматически распознаются AI-агентами (OpenCode v2, Claude Code, Antigravity):
+В репозитории подготовлены навыки по спецификации **Agent Skills** (размещены в каталогах `.agents/skills/` и `.opencode/skills/`), которые автоматически распознаются AI-агентами (OpenCode v2, Claude Code, Hermes Agent, Antigravity):
 
 1. **`yandex-disk`** (`Yandex Disk Management`): навигация, поиск, чтение и запись текстовых файлов, создание папок, управление публичными ссылками, проверка квоты.
 2. **`yandex-disk-transfer`** (`Yandex Disk File Transfer & Import`): передача бинарных файлов (изображения, архивы, PDF) через Base64, прямое скачивание по внешним HTTP/HTTPS URL, работа с файлами хоста.
