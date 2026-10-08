@@ -30,6 +30,9 @@ func TestServerToolsRegistered(t *testing.T) {
 		"yandex_get_storage_info",
 		"yandex_create_public_link",
 		"yandex_remove_public_link",
+		"yandex_upload_base64",
+		"yandex_download_base64",
+		"yandex_upload_from_url",
 	}
 
 	for _, exp := range expected {
@@ -59,5 +62,49 @@ func TestServerMissingRequiredArg(t *testing.T) {
 	}
 	if !res.IsError {
 		t.Errorf("Expected error result for missing argument, got success: %v", res)
+	}
+}
+
+func TestServerUploadBase64MissingArg(t *testing.T) {
+	client := &rclone.Client{Remote: "yandex"}
+	srv := NewServer(client)
+
+	tool := srv.GetTool("yandex_upload_base64")
+	if tool == nil {
+		t.Fatalf("Tool yandex_upload_base64 not found")
+	}
+
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "yandex_upload_base64"
+	req.Params.Arguments = map[string]any{"remote_path": "test.png"}
+
+	res, err := tool.Handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Unexpected execution error: %v", err)
+	}
+	if !res.IsError {
+		t.Errorf("Expected error result for missing content_base64, got success: %v", res)
+	}
+}
+
+func TestServerUploadFromURLMissingArg(t *testing.T) {
+	client := &rclone.Client{Remote: "yandex"}
+	srv := NewServer(client)
+
+	tool := srv.GetTool("yandex_upload_from_url")
+	if tool == nil {
+		t.Fatalf("Tool yandex_upload_from_url not found")
+	}
+
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "yandex_upload_from_url"
+	req.Params.Arguments = map[string]any{"url": "https://example.com/file.txt"}
+
+	res, err := tool.Handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Unexpected execution error: %v", err)
+	}
+	if !res.IsError {
+		t.Errorf("Expected error result for missing remote_path, got success: %v", res)
 	}
 }

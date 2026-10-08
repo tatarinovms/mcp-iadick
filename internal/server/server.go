@@ -405,4 +405,89 @@ func registerTools(s *mcpserver.MCPServer, client *rclone.Client) {
 			})
 		},
 	)
+
+	// 16. yandex_upload_base64
+	s.AddTool(
+		mcp.NewTool("yandex_upload_base64",
+			mcp.WithDescription("Upload a binary or text file to Yandex Disk directly from a base64 encoded string."),
+			mcp.WithString("remote_path", mcp.Required(), mcp.Description("Target path on Yandex Disk (e.g. 'Photos/pic.png', 'Documents/file.pdf')")),
+			mcp.WithString("content_base64", mcp.Required(), mcp.Description("Base64 encoded file content")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			remotePath, err := req.RequireString("remote_path")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			contentBase64, err := req.RequireString("content_base64")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+
+			bytesWritten, err := client.UploadBase64(ctx, remotePath, contentBase64)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return jsonResult(map[string]any{
+				"remote_path":   client.ResolvePath(remotePath),
+				"status":        "uploaded",
+				"bytes_written": bytesWritten,
+			})
+		},
+	)
+
+	// 17. yandex_download_base64
+	s.AddTool(
+		mcp.NewTool("yandex_download_base64",
+			mcp.WithDescription("Read/download a file from Yandex Disk as a base64 encoded string (ideal for binary files like images, documents, archives)."),
+			mcp.WithString("path", mcp.Required(), mcp.Description("Remote file path on Yandex Disk")),
+			mcp.WithInteger("max_bytes", mcp.Description("Maximum bytes to read (default: 10485760 / 10MB)")),
+			mcp.WithInteger("offset", mcp.Description("Starting byte offset (default: 0)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			path, err := req.RequireString("path")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			maxBytes := req.GetInt("max_bytes", 10*1024*1024)
+			offset := req.GetInt("offset", 0)
+
+			res, err := client.ReadFileBase64(ctx, path, maxBytes, offset)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return jsonResult(res)
+		},
+	)
+
+	// 18. yandex_upload_from_url
+	s.AddTool(
+		mcp.NewTool("yandex_upload_from_url",
+			mcp.WithDescription("Download a file from an external URL directly into Yandex Disk without saving it to local disk first."),
+			mcp.WithString("url", mcp.Required(), mcp.Description("Direct HTTP/HTTPS URL of the file to download")),
+			mcp.WithString("remote_path", mcp.Required(), mcp.Description("Target path or directory on Yandex Disk (e.g. 'Downloads/file.zip' or 'Downloads/')")),
+			mcp.WithBoolean("auto_filename", mcp.Description("If true, automatically detect file name from URL when remote_path is a directory (default: true)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			url, err := req.RequireString("url")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			remotePath, err := req.RequireString("remote_path")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			autoFilename := req.GetBool("auto_filename", true)
+
+			filename, err := client.UploadFromURL(ctx, url, remotePath, autoFilename)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return jsonResult(map[string]any{
+				"url":         url,
+				"remote_path": client.ResolvePath(remotePath),
+				"filename":    filename,
+				"status":      "uploaded_from_url",
+			})
+		},
+	)
 }

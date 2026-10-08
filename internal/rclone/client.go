@@ -3,6 +3,7 @@ package rclone
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -44,6 +45,15 @@ type ReadResult struct {
 	BytesRead   int    `json:"bytes_read"`
 	Offset      int    `json:"offset"`
 	IsTruncated bool   `json:"is_truncated"`
+}
+
+// Base64ReadResult represents binary content read from a file and base64-encoded.
+type Base64ReadResult struct {
+	Path          string `json:"path"`
+	ContentBase64 string `json:"content_base64"`
+	BytesRead     int    `json:"bytes_read"`
+	Offset        int    `json:"offset"`
+	IsTruncated   bool   `json:"is_truncated"`
 }
 
 // Client wraps the rclone CLI.
@@ -274,8 +284,8 @@ func (c *Client) GetFileInfo(ctx context.Context, path string) (*Item, error) {
 	return &item, nil
 }
 
-// ReadFile reads contents of a file with byte count and offset support.
-func (c *Client) ReadFile(ctx context.Context, path string, maxBytes, offset int) (*ReadResult, error) {
+// ReadFileRaw reads raw bytes of a file with byte count and offset support.
+func (c *Client) ReadFileRaw(ctx context.Context, path string, maxBytes, offset int) ([]byte, bool, error) {
 	resolved := c.ResolvePath(path)
 	args := []string{"cat", resolved}
 
@@ -288,7 +298,7 @@ func (c *Client) ReadFile(ctx context.Context, path string, maxBytes, offset int
 
 	out, err := c.Run(ctx, nil, args...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	truncated := false
@@ -297,12 +307,38 @@ func (c *Client) ReadFile(ctx context.Context, path string, maxBytes, offset int
 		out = out[:maxBytes]
 	}
 
+	return out, truncated, nil
+}
+
+// ReadFile reads contents of a file as a string.
+func (c *Client) ReadFile(ctx context.Context, path string, maxBytes, offset int) (*ReadResult, error) {
+	out, truncated, err := c.ReadFileRaw(ctx, path, maxBytes, offset)
+	if err != nil {
+		return nil, err
+	}
+
 	return &ReadResult{
-		Path:        resolved,
+		Path:        c.ResolvePath(path),
 		Content:     string(out),
 		BytesRead:   len(out),
 		Offset:      offset,
 		IsTruncated: truncated,
+	}, nil
+}
+
+// ReadFileBase64 reads contents of a file and encodes as base64 string.
+func (c *Client) ReadFileBase64(ctx context.Context, path string, maxBytes, offset int) (*Base64ReadResult, error) {
+	out, truncated, err := c.ReadFileRaw(ctx, path, maxBytes, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Base64ReadResult{
+		Path:          c.ResolvePath(path),
+		ContentBase64: base64.StdEncoding.EncodeToString(out),
+		BytesRead:     len(out),
+		Offset:        offset,
+		IsTruncated:   truncated,
 	}, nil
 }
 
@@ -311,6 +347,60 @@ func (c *Client) WriteFile(ctx context.Context, path string, content []byte) err
 	resolved := c.ResolvePath(path)
 	_, err := c.Run(ctx, content, "rcat", resolved)
 	return err
+}
+
+// decodeBase64 strips potential data URL prefixes, whitespaces and decodes standard or raw base64.
+func decodeBase64(contentBase64 string) ([]byte, error) {
+	clean := strings.TrimSpace(contentBase64)
+	if idx := strings.Index(clean, ";base64,"); idx != -1 {
+		clean = clean[idx+8:]
+	}
+	clean = strings.ReplaceAll(clean, "\n", "")
+	clean = strings.ReplaceAll(clean, "\r", "")
+	clean = strings.ReplaceAll(clean, " ", "")
+
+	data, err := base64.StdEncoding.DecodeString(clean)
+	if err != nil {
+		data, err = base64.RawStdEncoding.DecodeString(clean)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode base64: %w", err)
+		}
+	}
+	return data, nil
+}
+
+// UploadBase64 decodes base64 content and writes it to remote path.
+func (c *Client) UploadBase64(ctx context.Context, path, contentBase64 string) (int, error) {
+	data, err := decodeBase64(contentBase64)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := c.WriteFile(ctx, path, data); err != nil {
+		return 0, err
+	}
+	return len(data), nil
+}
+
+// UploadFromURL downloads a file from URL directly to Yandex Disk via rclone copyurl.
+func (c *Client) UploadFromURL(ctx context.Context, url, remotePath string, autoFilename bool) (string, error) {
+	resolved := c.ResolvePath(remotePath)
+	args := []string{"copyurl", url, resolved, "--print-filename"}
+	if autoFilename || strings.HasSuffix(remotePath, "/") || remotePath == "" {
+		args = append(args, "--auto-filename")
+	}
+
+	out, err := c.Run(ctx, nil, args...)
+	if err != nil {
+		return "", err
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	filename := ""
+	if len(lines) > 0 {
+		filename = strings.TrimSpace(lines[len(lines)-1])
+	}
+	return filename, nil
 }
 
 // CreateDirectory creates a folder via rclone mkdir.

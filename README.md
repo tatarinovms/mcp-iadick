@@ -17,7 +17,9 @@
 - **Навигация**: просмотр содержимого директорий (`yandex_list_directory`), метаданных файлов (`yandex_get_file_info`).
 - **Поиск**: поиск файлов по маске/шаблону (`yandex_search_files`).
 - **Чтение и запись**: чтение текстовых файлов с лимитом размера (`yandex_read_file`), запись/создание файлов (`yandex_write_file`).
-- **Синхронизация**: загрузка файлов с локального диска на Яндекс Диск (`yandex_upload_file`) и скачивание (`yandex_download_file`).
+- **Передача бинарных файлов (Base64)**: загрузка любых файлов на Диск из Base64-строки (`yandex_upload_base64`) и скачивание в Base64 (`yandex_download_base64`).
+- **Загрузка по ссылке (URL)**: прямое скачивание файлов из интернета по ссылке на Яндекс Диск (`yandex_upload_from_url`).
+- **Синхронизация с сервером**: загрузка файлов с локального диска машины на Яндекс Диск (`yandex_upload_file`) и скачивание (`yandex_download_file`).
 - **Управление**: создание папок (`yandex_create_directory`), удаление файлов (`yandex_delete_file`) и каталогов (`yandex_delete_directory`).
 - **Перемещение и копирование**: `yandex_move_item`, `yandex_copy_item`.
 - **Квота диска**: получение информации о свободном, занятом и общем месте (`yandex_get_storage_info`).
@@ -237,17 +239,30 @@ opencode mcp list
 | `yandex_get_file_info` | `path` | Детальная информация и метаданные пути |
 | `yandex_read_file` | `path`, `max_bytes`, `offset` | Чтение содержимого текстового файла |
 | `yandex_write_file` | `path`, `content` | Запись текста в файл на Яндекс Диске |
+| `yandex_upload_base64` | `remote_path`, `content_base64` | Загрузка файлов (включая бинарные: изображения, документы, архивы) из Base64-строки напрямую на Диск |
+| `yandex_download_base64` | `path`, `max_bytes`, `offset` | Скачивание/чтение файла с Диска в кодировке Base64 (для бинарных файлов) |
+| `yandex_upload_from_url` | `url`, `remote_path`, `auto_filename` | Прямое скачивание файла по ссылке (URL) из интернета на Диск (без промежуточного сохранения) |
 | `yandex_create_directory`| `path` | Создание новой папки |
 | `yandex_delete_file` | `path` | Удаление отдельного файла |
 | `yandex_delete_directory`| `path`, `recursive` | Удаление каталога (с `recursive=True` удаляет все внутри) |
 | `yandex_copy_item` | `source_path`, `destination_path` | Копирование файла/папки внутри Диска |
 | `yandex_move_item` | `source_path`, `destination_path` | Перемещение/переименование файла или папки |
-| `yandex_upload_file` | `local_path`, `remote_path` | Загрузка файла с локального компьютера на Диск |
-| `yandex_download_file` | `remote_path`, `local_path` | Скачивание файла с Диска на локальный компьютер |
+| `yandex_upload_file` | `local_path`, `remote_path` | Загрузка файла с локального диска сервера на Диск |
+| `yandex_download_file` | `remote_path`, `local_path` | Скачивание файла с Диска на локальный диск сервера |
 | `yandex_search_files` | `pattern`, `path` | Рекурсивный поиск файлов по маске (например, `*.pdf`) |
 | `yandex_get_storage_info`| - | Получение квоты (всего, занято, свободно, %) |
 | `yandex_create_public_link` | `path`, `expire` | Создание публичной ссылки `yadi.sk` на файл или папку |
 | `yandex_remove_public_link` | `path` | Закрытие общего доступа (отзыв ссылки) |
+
+---
+
+## Готовые скиллы (Agent Skills)
+
+В репозитории подготовлены навыки по спецификации **Agent Skills** (размещены в каталогах `.agents/skills/` и `.opencode/skills/`), которые автоматически распознаются AI-агентами (OpenCode v2, Claude Code, Antigravity):
+
+1. **`yandex-disk`** (`Yandex Disk Management`): навигация, поиск, чтение и запись текстовых файлов, создание папок, управление публичными ссылками, проверка квоты.
+2. **`yandex-disk-transfer`** (`Yandex Disk File Transfer & Import`): передача бинарных файлов (изображения, архивы, PDF) через Base64, прямое скачивание по внешним HTTP/HTTPS URL, работа с файлами хоста.
+3. **`yandex-disk-backup`** (`Yandex Disk Backup & Snapshot`): создание структурированных резервных копий по расписанию/датам, проверка дискового пространства, генерация временных публичных ссылок на скачивание, ротация бэкапов.
 
 ---
 
