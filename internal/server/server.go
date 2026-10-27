@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -25,11 +26,59 @@ func NewServer(client *rclone.Client) *mcpserver.MCPServer {
 }
 
 func jsonResult(data any) (*mcp.CallToolResult, error) {
-	b, err := json.MarshalIndent(data, "", "  ")
+	b, err := json.Marshal(data)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("JSON marshal error: %v", err)), nil
 	}
 	return mcp.NewToolResultText(string(b)), nil
+}
+
+// listResult optionally projects each item onto a caller-selected set of fields.
+func listResult(page *rclone.ListResult, fields []string, data map[string]any) (*mcp.CallToolResult, error) {
+	data["count"] = page.Count
+	data["offset"] = page.Offset
+	data["has_more"] = page.HasMore
+	if page.NextOffset != nil {
+		data["next_offset"] = *page.NextOffset
+	}
+	data["items"] = page.Items
+	if len(fields) > 0 {
+		items := make([]map[string]any, 0, len(page.Items))
+		for _, item := range page.Items {
+			values := map[string]any{
+				"Path": item.Path, "Name": item.Name, "Size": item.Size,
+				"SizeHuman": item.SizeHuman, "MimeType": item.MimeType,
+				"ModTime": item.ModTime, "IsDir": item.IsDir,
+			}
+			selected := make(map[string]any, len(fields))
+			for _, field := range fields {
+				selected[field] = values[field]
+			}
+			items = append(items, selected)
+		}
+		data["items"] = items
+	}
+	return jsonResult(data)
+}
+
+func listFields(value string) ([]string, error) {
+	if len(value) > 256 {
+		return nil, fmt.Errorf("fields must not exceed 256 bytes")
+	}
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	fields := strings.Split(value, ",")
+	for i, field := range fields {
+		field = strings.TrimSpace(field)
+		switch field {
+		case "Path", "Name", "Size", "SizeHuman", "MimeType", "ModTime", "IsDir":
+			fields[i] = field
+		default:
+			return nil, fmt.Errorf("unknown item field %q; use Path, Name, Size, SizeHuman, MimeType, ModTime, IsDir", field)
+		}
+	}
+	return fields, nil
 }
 
 func registerTools(s *mcpserver.MCPServer, client *rclone.Client) {
@@ -39,26 +88,38 @@ func registerTools(s *mcpserver.MCPServer, client *rclone.Client) {
 			mcp.WithDescription("List contents of a directory on Yandex Disk with file sizes and modification dates."),
 			mcp.WithString("path", mcp.Description("Directory path on Yandex Disk (empty for root, e.g. '', 'Documents')")),
 			mcp.WithBoolean("recursive", mcp.Description("If true, list recursively")),
-			mcp.WithInteger("max_depth", mcp.Description("Maximum depth for traversal (default: 1)")),
+			mcp.WithInteger("max_depth", mcp.Min(0), mcp.Description("Maximum recursive depth; 0 means unlimited (default). Non-recursive listings only return immediate children.")),
 			mcp.WithBoolean("dirs_only", mcp.Description("If true, list only folders")),
 			mcp.WithBoolean("files_only", mcp.Description("If true, list only files")),
+			mcp.WithInteger("limit", mcp.Min(1), mcp.Max(rclone.MaxListLimit), mcp.Description("Maximum items in a page (default: 1000, maximum: 5000)")),
+			mcp.WithInteger("offset", mcp.Min(0), mcp.Description("Items to skip (default: 0). Each page repeats the traversal; ordering depends on rclone.")),
+			mcp.WithString("fields", mcp.MaxLength(256), mcp.Description("Optional comma-separated item fields: Path,Name,Size,SizeHuman,MimeType,ModTime,IsDir")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			path := req.GetString("path", "")
 			recursive := req.GetBool("recursive", false)
-			maxDepth := req.GetInt("max_depth", 1)
+			maxDepth := req.GetInt("max_depth", 0)
 			dirsOnly := req.GetBool("dirs_only", false)
 			filesOnly := req.GetBool("files_only", false)
+			limit := req.GetInt("limit", rclone.DefaultListLimit)
+			if limit < 1 {
+				return mcp.NewToolResultError("limit must be between 1 and 5000"), nil
+			}
 
-			items, err := client.ListDirectory(ctx, path, recursive, maxDepth, dirsOnly, filesOnly, "")
+			fields, err := listFields(req.GetString("fields", ""))
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			page, err := client.ListDirectory(ctx, path, rclone.ListOptions{
+				Recursive: recursive, MaxDepth: maxDepth, DirsOnly: dirsOnly, FilesOnly: filesOnly,
+				Limit: limit, Offset: req.GetInt("offset", 0),
+			})
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 
-			return jsonResult(map[string]any{
-				"path":  client.ResolvePath(path),
-				"count": len(items),
-				"items": items,
+			return listResult(page, fields, map[string]any{
+				"path": client.ResolvePath(path),
 			})
 		},
 	)
@@ -88,8 +149,8 @@ func registerTools(s *mcpserver.MCPServer, client *rclone.Client) {
 		mcp.NewTool("yandex_read_file",
 			mcp.WithDescription("Read text contents of a file on Yandex Disk (with max_bytes protection)."),
 			mcp.WithString("path", mcp.Required(), mcp.Description("Remote file path")),
-			mcp.WithInteger("max_bytes", mcp.Description("Maximum bytes to read (default: 100000)")),
-			mcp.WithInteger("offset", mcp.Description("Starting byte offset (default: 0)")),
+			mcp.WithInteger("max_bytes", mcp.Min(1), mcp.Max(rclone.MaxReadBytes), mcp.Description("Bytes to read: 1..10485760 (default: 100000)")),
+			mcp.WithInteger("offset", mcp.Min(0), mcp.Description("Starting byte offset (default: 0)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			path, err := req.RequireString("path")
@@ -112,7 +173,7 @@ func registerTools(s *mcpserver.MCPServer, client *rclone.Client) {
 		mcp.NewTool("yandex_write_file",
 			mcp.WithDescription("Write text content to a file on Yandex Disk (creates or overwrites)."),
 			mcp.WithString("path", mcp.Required(), mcp.Description("Remote file path")),
-			mcp.WithString("content", mcp.Required(), mcp.Description("File content string")),
+			mcp.WithString("content", mcp.Required(), mcp.MaxLength(rclone.MaxUploadBytes), mcp.Description("File content string (maximum: 10 MiB in UTF-8)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			path, err := req.RequireString("path")
@@ -124,7 +185,7 @@ func registerTools(s *mcpserver.MCPServer, client *rclone.Client) {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 
-			if err := client.WriteFile(ctx, path, []byte(content)); err != nil {
+			if err := client.WriteTextFile(ctx, path, content); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			return jsonResult(map[string]any{
@@ -322,6 +383,10 @@ func registerTools(s *mcpserver.MCPServer, client *rclone.Client) {
 			mcp.WithDescription("Search for files matching a wildcard pattern (e.g. '*.pdf', '*report*') on Yandex Disk."),
 			mcp.WithString("pattern", mcp.Required(), mcp.Description("Wildcard pattern to match")),
 			mcp.WithString("path", mcp.Description("Subdirectory to search inside (empty for root)")),
+			mcp.WithInteger("max_depth", mcp.Min(0), mcp.Description("Maximum recursive depth; 0 means unlimited (default)")),
+			mcp.WithInteger("limit", mcp.Min(1), mcp.Max(rclone.MaxListLimit), mcp.Description("Maximum items in a page (default: 1000, maximum: 5000)")),
+			mcp.WithInteger("offset", mcp.Min(0), mcp.Description("Items to skip (default: 0). Each page repeats the traversal; ordering depends on rclone.")),
+			mcp.WithString("fields", mcp.MaxLength(256), mcp.Description("Optional comma-separated item fields: Path,Name,Size,SizeHuman,MimeType,ModTime,IsDir")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			pattern, err := req.RequireString("pattern")
@@ -329,16 +394,26 @@ func registerTools(s *mcpserver.MCPServer, client *rclone.Client) {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			path := req.GetString("path", "")
+			limit := req.GetInt("limit", rclone.DefaultListLimit)
+			if limit < 1 {
+				return mcp.NewToolResultError("limit must be between 1 and 5000"), nil
+			}
 
-			items, err := client.ListDirectory(ctx, path, true, 0, false, false, pattern)
+			fields, err := listFields(req.GetString("fields", ""))
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			return jsonResult(map[string]any{
+			page, err := client.ListDirectory(ctx, path, rclone.ListOptions{
+				Recursive: true, FilesOnly: true, Pattern: pattern,
+				MaxDepth: req.GetInt("max_depth", 0),
+				Limit:    limit, Offset: req.GetInt("offset", 0),
+			})
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return listResult(page, fields, map[string]any{
 				"search_pattern": pattern,
 				"search_path":    client.ResolvePath(path),
-				"count":          len(items),
-				"items":          items,
 			})
 		},
 	)
@@ -411,7 +486,7 @@ func registerTools(s *mcpserver.MCPServer, client *rclone.Client) {
 		mcp.NewTool("yandex_upload_base64",
 			mcp.WithDescription("Upload a binary or text file to Yandex Disk directly from a base64 encoded string."),
 			mcp.WithString("remote_path", mcp.Required(), mcp.Description("Target path on Yandex Disk (e.g. 'Photos/pic.png', 'Documents/file.pdf')")),
-			mcp.WithString("content_base64", mcp.Required(), mcp.Description("Base64 encoded file content")),
+			mcp.WithString("content_base64", mcp.Required(), mcp.MaxLength(rclone.MaxBase64InputBytes), mcp.Description("Base64 encoded file content (decoded maximum: 10 MiB)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			remotePath, err := req.RequireString("remote_path")
@@ -440,8 +515,8 @@ func registerTools(s *mcpserver.MCPServer, client *rclone.Client) {
 		mcp.NewTool("yandex_download_base64",
 			mcp.WithDescription("Read/download a file from Yandex Disk as a base64 encoded string (ideal for binary files like images, documents, archives)."),
 			mcp.WithString("path", mcp.Required(), mcp.Description("Remote file path on Yandex Disk")),
-			mcp.WithInteger("max_bytes", mcp.Description("Maximum bytes to read (default: 10485760 / 10MB)")),
-			mcp.WithInteger("offset", mcp.Description("Starting byte offset (default: 0)")),
+			mcp.WithInteger("max_bytes", mcp.Min(1), mcp.Max(rclone.MaxReadBytes), mcp.Description("Bytes to read: 1..10485760 (default: 10485760 / 10 MiB)")),
+			mcp.WithInteger("offset", mcp.Min(0), mcp.Description("Starting byte offset (default: 0)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			path, err := req.RequireString("path")

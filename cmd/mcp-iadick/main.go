@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/tatarinovms/mcp-iadick/internal/rclone"
@@ -21,12 +22,15 @@ var (
 
 func main() {
 	var (
-		transport   = flag.String("transport", "stdio", "Transport protocol: 'stdio', 'http' (Streamable HTTP), 'sse', or 'dual'/'both' (HTTP + SSE)")
-		addr        = flag.String("addr", ":8080", "Network address to listen on for network modes (e.g. ':8080' or '0.0.0.0:8080')")
-		baseURL     = flag.String("base-url", "", "Base URL for SSE server (e.g. 'http://localhost:8080', defaults to http://localhost:<port>)")
-		remote      = flag.String("remote", "", "rclone remote name (default: 'yandex' or RCLONE_REMOTE env var)")
-		rclonePath  = flag.String("rclone-path", "", "Path to rclone binary (default: auto-detected or RCLONE_PATH env var)")
-		showVersion = flag.Bool("version", false, "Show version and exit")
+		transport        = flag.String("transport", "stdio", "Transport protocol: 'stdio', 'http' (Streamable HTTP), 'sse', or 'dual'/'both' (HTTP + SSE)")
+		addr             = flag.String("addr", ":8080", "Network address to listen on for network modes (e.g. ':8080' or '0.0.0.0:8080')")
+		baseURL          = flag.String("base-url", "", "Base URL for SSE server (e.g. 'http://localhost:8080', defaults to http://localhost:<port>)")
+		remote           = flag.String("remote", "", "rclone remote name (default: 'yandex' or RCLONE_REMOTE env var)")
+		rclonePath       = flag.String("rclone-path", "", "Path to rclone binary (default: auto-detected or RCLONE_PATH env var)")
+		operationTimeout = flag.Duration("operation-timeout", rclone.DefaultOperationTimeout, "Maximum operation duration including queue wait (e.g. '5m', '30m')")
+		maxConcurrent    = flag.Int("max-concurrent", rclone.DefaultMaxConcurrent, "Maximum simultaneous rclone processes")
+		logOperations    = flag.Bool("log-operations", false, "Log command names, durations and success to stderr (without paths or content)")
+		showVersion      = flag.Bool("version", false, "Show version and exit")
 	)
 	flag.Parse()
 
@@ -34,11 +38,17 @@ func main() {
 		fmt.Printf("mcp-iadick version %s (commit: %s, date: %s)\n", version, commit, date)
 		return
 	}
+	if *operationTimeout <= 0 || *maxConcurrent <= 0 {
+		log.Fatal("operation-timeout and max-concurrent must be positive")
+	}
 
 	client, err := rclone.NewClient(*remote, *rclonePath)
 	if err != nil {
 		log.Fatalf("Failed to initialize rclone client: %v", err)
 	}
+	client.OperationTimeout = *operationTimeout
+	client.MaxConcurrent = *maxConcurrent
+	client.LogOperations = *logOperations
 
 	mcpSrv := server.NewServer(client)
 
@@ -69,7 +79,9 @@ func main() {
 		log.Printf("Remote: %s:", client.Remote)
 
 		httpServer := mcpserver.NewStreamableHTTPServer(mcpSrv)
-		if err := httpServer.Start(*addr); err != nil {
+		mux := http.NewServeMux()
+		mux.Handle("/mcp", httpServer)
+		if err := serveNetwork(*addr, mux); err != nil {
 			log.Fatalf("HTTP server failed: %v", err)
 		}
 
@@ -83,7 +95,7 @@ func main() {
 			mcpSrv,
 			mcpserver.WithBaseURL(bURL),
 		)
-		if err := sseServer.Start(*addr); err != nil {
+		if err := serveNetwork(*addr, sseServer); err != nil {
 			log.Fatalf("SSE server failed: %v", err)
 		}
 
@@ -105,7 +117,7 @@ func main() {
 		mux.Handle("/sse", sseServer.SSEHandler())
 		mux.Handle("/message", sseServer.MessageHandler())
 
-		if err := http.ListenAndServe(*addr, mux); err != nil {
+		if err := serveNetwork(*addr, mux); err != nil {
 			log.Fatalf("Dual server failed: %v", err)
 		}
 
@@ -113,4 +125,28 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Unknown transport %q. Allowed: stdio, http, sse, dual\n", *transport)
 		os.Exit(1)
 	}
+}
+
+const maxRequestBodyBytes = 16 * 1024 * 1024
+
+func limitRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > maxRequestBodyBytes {
+			http.Error(w, "request body exceeds 16 MiB", http.StatusRequestEntityTooLarge)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func serveNetwork(addr string, handler http.Handler) error {
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           limitRequestBody(handler),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+	// No global WriteTimeout: SSE connections are intentionally long-lived.
+	return srv.ListenAndServe()
 }
